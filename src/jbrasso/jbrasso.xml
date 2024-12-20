@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <extension version="4.0" type="plugin" group="system" method="upgrade">
-	<name>SSO - JBRA_SSO v1.0</name>
+	<name>SSO - JBRA_SSO v1.1</name>
 	<author>Giannis Brailas</author>
 	<creationDate>Dec 2024</creationDate>
 	<copyright>Copyright (C) 2024 Giannis Brailas. All rights reserved.</copyright>
 	<license>GNU General Public License version 2 or later; see LICENSE.txt</license>
 	<authorEmail>jbrailas@rns-systems.eu</authorEmail>
 	<authorUrl>www.brailas.gr</authorUrl>
-	<version>1.0</version>
-	<buildDate>Fri Dec 04 11:47:50 2024</buildDate>
+	<version>1.1</version>
+	<buildDate>Fri Dec 12 10:27:10 2024</buildDate>
 	<description>RNS_SSO joomla plugin</description>
 	<files>
 		<filename plugin="jbrasso">jbrasso.php</filename>
@@ -24,7 +24,9 @@
                 <field name="api_url" type="text" label="User Info URL" />
                 <field name="client_id" type="text" label="Client ID" />
                 <field name="client_secret" type="password" label="Client Secret" />
-            </fieldset>
+				<field name="logout_url" type="text" label="Logout URL" />
+				<field name="debug" type="checkbox" label="Enable Debug" description="Click to enable php errorlog debug" value="1" />
+		   </fieldset>
         </fields>
     </config>
 </extension>
