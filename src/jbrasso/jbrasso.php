@@ -90,16 +90,26 @@ class PlgSystemJbraSso extends CMSPlugin
 			return;
 		}
 		
+		// Check for a remember me cookie
+		$cookieName = 'joomla_remember_me_' . UserHelper::getShortHashedUserAgent();
+		// initialise the login authentication process if a cookie is present
+		//if (Factory::getApplication()->getInput()->cookie->get($cookieName)) {
+		//	Factory::getApplication()->login(['username' => ''], ['silent' => true]);
+		//}
+        
+		
 		// Check if we have valid tokens
 		$tokens = $this->loadTokens();
 		if ($tokens) {
 			if ($this->isAccessTokenValid($tokens)) {
+				//error_log(Factory::getUser()->id . 'access token is valid.');
 				// Access token is valid; proceed with user login
 				$this->processUserSession($tokens);
 				return;
 			}
 
 			// Access token expired; attempt to refresh
+			//error_log(Factory::getUser()->id . 'access token is not valid, attempt to refresh.');
 			if (!empty($tokens['refresh_token'])) {
 				$this->handleTokenRefresh($tokens['refresh_token']);
 				return;
@@ -114,22 +124,37 @@ class PlgSystemJbraSso extends CMSPlugin
 	{
 		if (empty($tokens['access_token']) || empty($tokens['expires_in']) || empty($tokens['created_at'])) {
 			// Token data is incomplete
-			if ($this->debug) error_log('Token data is incomplete.');
+			if ($this->debug) error_log('jbrasso: Token data is incomplete.');
+			return false;
+		}
+		
+		// Ensure 'created_at' and 'expires_in' are integers
+		$updatedAt = strtotime($tokens['updated_at']);
+		$expiresIn = (int) $tokens['expires_in'];
+		
+		// Validate 'updated_at' and 'expires_in'
+		if ($updatedAt <= 0 || $expiresIn <= 0) {
+			if ($this->debug) {
+				error_log('jbrasso: Invalid token timestamps: updated_at=' . $updatedAt . ', expires_in=' . $expiresIn);
+			}
 			return false;
 		}
 
 		// Calculate expiration time
 		$currentTime = time(); // Current time in seconds
-		$expirationTime = $tokens['created_at'] + $tokens['expires_in']; // When the token expires
+		$expirationTime = $updatedAt + $expiresIn; // When the token expires
 
 		if ($currentTime >= $expirationTime) {
 			// Token has expired
-			if ($this->debug) error_log('Access token has expired.');
+			if ($this->debug) {
+				error_log('jbrasso: Access token has expired or is about to expire.');
+				error_log('jbrasso: Current time: ' . $currentTime . ', Expiration time: ' . $expirationTime);
+			}
 			return false;
 		}
 
 		// Token is still valid
-		if ($this->debug) error_log('Access token is valid.');
+		if ($this->debug) error_log('jbrasso: Access token is valid.');
 		return true;
 	}
 	
@@ -224,6 +249,9 @@ class PlgSystemJbraSso extends CMSPlugin
 			
 			if ($tokens) {
 				if (!$this->isAccessTokenValid($tokens)) {
+					
+					if ($this->debug) Factory::getApplication()->enqueueMessage('access token is not valid.', 'error');
+					
 					// Access token expired, try refreshing it
 					$newTokens = $this->refreshAccessToken($tokens['refresh_token']);
 
@@ -349,6 +377,7 @@ class PlgSystemJbraSso extends CMSPlugin
 
 			// Process the user information (e.g., create or update user)
 			$user = $this->getUserByEmail($userInfo['mail']);
+			//error_log("user is:" . print_r($user, true));
 			if (empty($user)) {
 				// User does not exist; create a new user
 				$user = $this->createUser($userInfo);
@@ -437,13 +466,15 @@ class PlgSystemJbraSso extends CMSPlugin
 	}
 	
 	private function createUser($userInfo) {
-		if ($this->debug) error_log('createUser executed\n');
+		error_log('createUser executed\n');
         if (!empty($userInfo)) {
             // If user doesn't exist, create a new Joomla user
             $user = new User();
             $user->email = $userInfo['mail'];
-            $user->name = $userInfo['displayName'];
+            $user->name = $userInfo['surname'] . " " . $userInfo['givenName'];
             $user->username = $userInfo['userPrincipalName'];
+			$user->lastvisitDate = date("Y-m-d H:i:s");
+			$user->groups = [2]; //default group is registered
             $user->password_clear = UserHelper::genRandomPassword(12); // Temporary random password
 
             if (!$user->save()) {
@@ -552,10 +583,11 @@ class PlgSystemJbraSso extends CMSPlugin
 
 		// Load the result
 		$userData = $db->loadAssoc();
-		$userData["params"] = array();
-		//if ($this->debug) error_log("userData :" . print_r($userData,true));
-
+		//error_log("userData :" . print_r($userData,true));
+		
 		if ($userData) {
+			$userData["params"] = array();
+			
 			// Load the user object
 			$user = new User();
 			$user->bind($userData);
@@ -742,44 +774,46 @@ class PlgSystemJbraSso extends CMSPlugin
 
 	private function loadTokens()
 	{
-		if ($this->debug) error_log('loadTokens executed');
-		$user = Factory::getUser();
-		$userId = is_object($user) && isset($user->id) ? (int) $user->id : 0;
-		
-		// Load tokens (e.g., from a database or session)
 		$db = Factory::getDbo();
-		$query = $db->getQuery(true);
+		
+		if ($this->debug) error_log('jbrasso: loadTokens executed');
+		$user = Factory::getUser();
+		//$userId = is_object($user) && isset($user->id) ? (int) $user->id : 0;
+		
+		if (is_object($user) && isset($user->id)) {
+			$userId = (int) $user->id;
+		} //check for Kerberos remote_user variable
+		elseif (!empty($_SERVER['REMOTE_USER']) && empty($user->id)) {
+			$username = $_SERVER['REMOTE_USER'];
+			$query = $db->getQuery(true);
+			$query->select('id')
+				->from('#__users')
+				->where('username = "' . $username . '"');
+			$db->setQuery($query);
+			$userId = $db->loadResult();
+		}
+		else
+			$userId = 0;
 
+		//error_log('jbrasso: loadTokens executed with userId:' . $userId);		
+				
+		// Load tokens (e.g., from a database or session)
+		$query = $db->getQuery(true);
 		$query->select('*')
 			->from('#__jbrasso_oauth_tokens')
 			->where('user_id = ' . (int) $userId);
-
 		$db->setQuery($query);
 		return $db->loadAssoc();
 	}
 	
 	public function logout()
-	{
-		// Start the session if not already started
-		//if (session_status() == PHP_SESSION_NONE) {
-		//	session_start();
-		//}
-
-		// Clear OAuth tokens if stored in the session
-		//if (isset($_SESSION['oauth_tokens'])) {
-		//	unset($_SESSION['oauth_tokens']);
-		//	if ($this->debug) error_log('OAuth tokens have been cleared.');
-		//}
-		
+	{		
 		// Clear stored tokens
 		$this->clearTokens(); 
 		
 		// Clear Joomla session
 		$session = Factory::getSession();
 		$session->destroy(); // Destroys the Joomla session
-
-		// Clear other session variables related to the user
-		//$_SESSION = []; // Reset session variables
 
 		// Destroy the session completely
 		//session_destroy();
@@ -809,6 +843,11 @@ class PlgSystemJbraSso extends CMSPlugin
 				->where($db->quoteName('user_id') . ' = ' . (int)$user->id);
 			$db->setQuery($query);
 			$db->execute();
+
+			$query = $db->getQuery(true)
+				->delete($db->quoteName('#__user_keys'))
+				->where($db->quoteName('user_id') . ' = ' . (int)$user->id);
+			$db->setQuery($query)->execute();
 		}
 	}
 	
