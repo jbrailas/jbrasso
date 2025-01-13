@@ -466,7 +466,7 @@ class PlgSystemJbraSso extends CMSPlugin
 	}
 	
 	private function createUser($userInfo) {
-		error_log('createUser executed\n');
+		if ($this->debug) error_log('createUser executed\n');
         if (!empty($userInfo)) {
             // If user doesn't exist, create a new Joomla user
             $user = new User();
