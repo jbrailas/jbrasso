@@ -2,7 +2,7 @@
 /**
  * @package     jbraSso.Plugins
  * @author      Giannis Brailas <jbrailas@rns-systems.eu>
- * @copyright   Copyright (C) 2024 Giannis Brailas. All rights reserved.
+ * @copyright   Copyright (C) 2025 Giannis Brailas. All rights reserved.
  * @license     GNU General Public License version 2 or later; see LICENSE.txt
  */
  
@@ -40,6 +40,7 @@ class PlgSystemJbraSso extends CMSPlugin
     private $clientId;
     private $clientSecret;
     private $redirectUri;
+	private $admin_sso;
 
     public function __construct(&$subject, $config)
     {
@@ -54,6 +55,7 @@ class PlgSystemJbraSso extends CMSPlugin
 		$this->app_scope = $this->params->get('app_scope', 'openid');
         $this->clientSecret = $this->params->get('client_secret', '');
 		$this->logout_url = $this->params->get('logout_url', 'https://login.microsoftonline.com/common/oauth2/v2.0/logout');
+		$this->admin_sso = $this->params->get('admin_sso', false);
 		$this->debug = $this->params->get('debug', false);
         
 		if (Factory::getApplication()->isClient('administrator')) {
@@ -68,7 +70,8 @@ class PlgSystemJbraSso extends CMSPlugin
     public function onAfterRoute()
     {
 		// Check if the request is for your plugin
-		$input = Factory::getApplication()->input;
+		$app = Factory::getApplication();
+		$input = $app->input;
 		$plugin = $input->getCmd('plugin');
 		$app_name = $input->getCmd('app_name');
 		$task = $input->getCmd('task');
@@ -80,7 +83,6 @@ class PlgSystemJbraSso extends CMSPlugin
 			if ($plugin === 'jbrasso' && $task === 'logout') {
 				if ($this->debug) error_log('Logout requested.');
 				$this->logout();
-				return;
 			}
             return;
         }
@@ -91,25 +93,59 @@ class PlgSystemJbraSso extends CMSPlugin
 		}
 		
 		// Check for a remember me cookie
-		$cookieName = 'joomla_remember_me_' . UserHelper::getShortHashedUserAgent();
+		$rememberMeCookieName = 'joomla_remember_me_' . UserHelper::getShortHashedUserAgent();
+		//$cookieValue = $input->cookie->get($rememberMeCookieName, null, 'raw');
+		$cookieValue = isset($_COOKIE[$rememberMeCookieName]) ? $_COOKIE[$rememberMeCookieName] : null;
+
+		if ($this->debug) error_log('jbrasso: cookieValue of remember_me is: ' . $cookieValue);
+
 		// initialise the login authentication process if a cookie is present
-		//if (Factory::getApplication()->getInput()->cookie->get($cookieName)) {
-		//	Factory::getApplication()->login(['username' => ''], ['silent' => true]);
-		//}
-        
+		if ($cookieValue && $app->isClient('site')) {
+
+			if ($this->debug) error_log('jbrasso: cookieValue of remember_me is found.');
+			
+			$decodedValue = base64_decode($cookieValue, true);
+			if ($this->debug) error_log('jbrasso: decodedValue is: ' . $decodedValue);
+        	
+			if ($decodedValue && strpos($decodedValue, ':') !== false) {
+
+				// Parse the cookie value
+				list($series, $token) = explode(':', $decodedValue, 2);
+
+				// Fetch the stored token from the database
+				$result = $this->validateRememberMeToken($series, $token);
+				
+				if ($this->debug)
+					error_log('jbrasso: validateRememberMeToken result is: ' . print_r($result,true));
+
+				if ($result && isset($result->user_id)) {
+					
+					$user = Factory::getUser($result->user_id);
+					$this->autoLoginUser($user);
+
+					if ($this->debug) error_log('jbrasso: User Login ' . $result->user_id . ' succeeded using remember_me cookie.');
+					return;
+					
+				} else {
+					// Invalid cookie, clear it
+					$input->cookie->set($rememberMeCookieName, '', time() - 3600, '/');
+					if ($this->debug) error_log('jbrasso: Invalid remember_me cookie.');
+				}
+			}
+			$input->cookie->set($rememberMeCookieName, '', time() - 3600, '/');
+		}
 		
 		// Check if we have valid tokens
 		$tokens = $this->loadTokens();
 		if ($tokens) {
 			if ($this->isAccessTokenValid($tokens)) {
-				//error_log(Factory::getUser()->id . 'access token is valid.');
+
 				// Access token is valid; proceed with user login
 				$this->processUserSession($tokens);
 				return;
 			}
 
 			// Access token expired; attempt to refresh
-			//error_log(Factory::getUser()->id . 'access token is not valid, attempt to refresh.');
 			if (!empty($tokens['refresh_token'])) {
 				$this->handleTokenRefresh($tokens['refresh_token']);
 				return;
@@ -117,7 +153,9 @@ class PlgSystemJbraSso extends CMSPlugin
 		}
 
         // No valid tokens; Redirect to the OAuth 2.0 authorization server
-		$this->redirectForAuthorization(Factory::getSession()->get('oauth2.state'));
+		//in frontend always and in backend only if the checkbox admin_sso is clicked
+		if ($app->isClient('site') || ($app->isClient('administrator') && $this->admin_sso ))
+			$this->redirectForAuthorization(Factory::getSession()->get('oauth2.state'));
     }
 	
 	private function isAccessTokenValid($tokens)
@@ -157,6 +195,46 @@ class PlgSystemJbraSso extends CMSPlugin
 		if ($this->debug) error_log('jbrasso: Access token is valid.');
 		return true;
 	}
+
+	/**
+	 * Validate the Remember Me token.
+	 *
+	 * @param string $series The series value from the cookie.
+	 * @param string $token The token value from the cookie.
+	 * @return object|null Returns the user object if the token is valid, or null if invalid.
+	 */
+	private function validateRememberMeToken($series, $token)
+	{
+		if ($this->debug) error_log('jbrasso: validateRememberMeToken function initialized.');
+
+		// Get the database object
+		$db = Factory::getDbo();
+
+		// Build the query to fetch the user details associated with the token
+		$query = $db->getQuery(true)
+			->select($db->quoteName(['user_id', 'token']))
+			->from($db->quoteName('#__user_keys'))
+			->where($db->quoteName('series') . ' = ' . $db->quote($series))
+			->where($db->quoteName('time') . ' >= ' . $db->quote(time() - 30 * 86400)); // Token validity: 30 days
+
+		// Execute the query
+		$db->setQuery($query);
+
+		try {
+			$result = $db->loadObject();
+
+			if ($result) {
+				// Use password_verify to check if the plaintext token matches the hashed token in DB
+				if (password_verify($token, $result->token)) {
+					return $result;  // Valid token
+				}
+			}
+		} catch (Exception $e) {
+			if ($this->debug) error_log('Error validating Remember Me token: ' . $e->getMessage());
+		}
+
+		return null; // Token is invalid or expired
+	}
 	
 	private function handleTokenRefresh($refreshToken)
 	{
@@ -167,18 +245,6 @@ class PlgSystemJbraSso extends CMSPlugin
 			// proceed with user info processing, saving tokens and login
 			$this->processUserSession($newTokens);
 			
-			/*
-			$user = $this->processUserInfo($newTokens);
-
-			if (!empty($user->id)) {
-				$this->saveTokens($user->id, $newTokens);
-				$this->autoLoginUser($user);
-			} else {
-				if ($this->debug) error_log('Failed to retrieve user info after token refresh.');
-				 //$this->redirectForAuthorization();
-				//$this->redirectForAuthorization(Factory::getSession()->get('oauth2.state'));
-				$this->redirectWithError('Failed to process user after token refresh.');
-			}*/
 		} else {
 			if ($this->debug) error_log('Failed to refresh tokens.');
 			$this->redirectWithError('Failed to refresh access token. Please log in again.');
@@ -230,17 +296,12 @@ class PlgSystemJbraSso extends CMSPlugin
 				]);
 				Factory::getApplication()->redirect($authUrl);
 			} else {
+
 				if ($this->debug)  error_log('tokenData found');
+				
 				// proceed with user info processing, saving tokens and login
 				$this->processUserSession($tokenData);
 				
-				/*// Save tokens and proceed with user info processing
-				$user = $this->processUserInfo($tokenData);
-				if ($this->debug)  error_log("user->id is: ". $user->id);
-				if (!empty($user->id))
-					$this->saveTokens($user->id, $tokenData);
-				// Auto-login the user after processing
-				$this->autoLoginUser($user);*/
 			}
 		
 		} else {
@@ -258,14 +319,7 @@ class PlgSystemJbraSso extends CMSPlugin
 					if ($newTokens) {
 						// proceed with user info processing, saving tokens and login
 						$this->processUserSession($newTokens);
-						/*
-						$user = $this->processUserInfo($newTokens);
-						if ($this->debug) error_log("user->id is:: ". $user->id);
-						if (!empty($user->id))
-							$this->saveTokens($user->id, $newTokens);
-						// Auto-login the user after processing
-						$this->autoLoginUser($user);
-						*/
+
 					} else {
 						// Failed to refresh tokens, require re-authorization
 						Factory::getApplication()->enqueueMessage('Failed to refresh access token. Please log in again.', 'error');
@@ -282,13 +336,6 @@ class PlgSystemJbraSso extends CMSPlugin
 					// proceed with user info processing, saving tokens and login
 					$this->processUserSession($tokens);
 					
-					/*// Access token is valid, proceed with user info processing
-					$user = $this->processUserInfo($tokens);
-					if ($this->debug) error_log("user->id is::: ". $user->id);
-					if (!empty($user->id))
-						$this->saveTokens($user->id, $tokens);
-					// Auto-login the user after processing
-					$this->autoLoginUser($user);*/
 				}	
 			} else {
 				if ($this->debug) error_log('No access token found');
@@ -551,6 +598,70 @@ class PlgSystemJbraSso extends CMSPlugin
 					$adminUrl = Uri::root() . 'administrator/index.php';
 					$app->redirect(Route::_($adminUrl));
 				} else {
+					
+					//after successful login set the remember me cookie manually
+					// Generate the series and token
+					$db = Factory::getDbo();
+					$series = UserHelper::genRandomPassword(20);
+					$token = UserHelper::genRandomPassword(20);
+					$hashedToken = UserHelper::hashPassword($token);
+					$userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+
+					// Check if an entry already exists for this user
+					$query = $db->getQuery(true);
+					$query->select('id') // Only need the ID
+							->from($db->quoteName('#__user_keys'))
+							->where($db->quoteName('user_id') . ' = ' . $db->quote($user->id));
+					$db->setQuery($query);
+					$existingEntry = $db->loadResult();
+
+					if ($existingEntry) {
+						// Delete the existing entry
+						$deleteQuery = $db->getQuery(true);
+						$deleteQuery->delete($db->quoteName('#__user_keys'))
+									->where($db->quoteName('user_id') . ' = ' . $db->quote($user->id));
+						$db->setQuery($deleteQuery);
+						$db->execute();
+						if ($this->debug) error_log('jbrasso: Existing remember me token deleted for user ' . $user->id);
+					}
+
+					// Insert into the database
+					$query = $db->getQuery(true)
+						->insert($db->quoteName('#__user_keys'))
+						->columns($db->quoteName(['user_id', 'series', 'token', 'time', 'uastring']))
+						->values(implode(',', [
+							(int) $user->id,
+							$db->quote($series),
+							$db->quote($hashedToken),
+							$db->quote(time()),
+							$db->quote($userAgent)
+						]));
+					$db->setQuery($query);
+					$db->execute();
+
+					// Set the cookie
+					$rememberMeCookieName = 'joomla_remember_me_' . UserHelper::getShortHashedUserAgent();
+					$cookieValue = base64_encode($series . ':' . $token);
+					$cookieExpiry = time() + 30 * 86400;
+					$cookiePath = '/';
+					
+					// Use setcookie() directly
+					setcookie(
+						$rememberMeCookieName,
+						$cookieValue,
+						[
+							'expires' => $cookieExpiry,
+							'path' => $cookiePath,
+							'secure' => true, // Essential if using HTTPS
+							'httponly' => true, // Recommended for security
+							'samesite' => 'Lax', // Or 'Strict' if needed
+						]
+					);
+					//old way: doesn't set secure and httponly
+					//$app->input->cookie->set($rememberMeCookieName, $cookieValue, time() + 30 * 86400, '/');
+
+					if ($this->debug) error_log('jbrasso: Login succeeded and remember_me cookie has been set.');
+					
 					// Redirect to the main site homepage
 					$siteUrl = Uri::base();
 					$app->redirect(Route::_($siteUrl));
@@ -654,36 +765,6 @@ class PlgSystemJbraSso extends CMSPlugin
             return false;
         }
     }
-
-    private function fetchUserInfo($accessToken)
-    {
-        $httpFactory = new HttpFactory(); // Create an instance of the HttpFactory
-        $http = $httpFactory->getHttp(); // Create the HTTP client instance
-        
-        try {
-            $headers = [
-                'Authorization' => 'Bearer ' . $accessToken,
-            ];
-            $response = $http->get($this->apiUrl, [], $headers);
-            $userInfo = json_decode($response->body, true);
-
-            if (isset($userInfo['error_description'])) {
-                Factory::getApplication()->enqueueMessage($userInfo['error_description'], 'error');
-                return false;
-            }
-			elseif (isset($userInfo['error'])) {
-				if ($this->debug) error_log("userInfo_error: " . $userInfo['error']);
-				//Factory::getApplication()->enqueueMessage($userInfo['error'], 'error');
-                return false;
-            }
-			
-            return $userInfo;
-			
-        } catch (Exception $e) {
-            Factory::getApplication()->enqueueMessage($e->getMessage(), 'error');
-            return false;
-        }
-    }
 	
 	private function refreshAccessToken($refreshToken)
 	{
@@ -778,7 +859,6 @@ class PlgSystemJbraSso extends CMSPlugin
 		
 		if ($this->debug) error_log('jbrasso: loadTokens executed');
 		$user = Factory::getUser();
-		//$userId = is_object($user) && isset($user->id) ? (int) $user->id : 0;
 		
 		if (is_object($user) && isset($user->id)) {
 			$userId = (int) $user->id;
@@ -808,16 +888,25 @@ class PlgSystemJbraSso extends CMSPlugin
 	
 	public function logout()
 	{		
+		$app = Factory::getApplication();
+		
 		// Clear stored tokens
 		$this->clearTokens(); 
 		
 		// Clear Joomla session
 		$session = Factory::getSession();
 		$session->destroy(); // Destroys the Joomla session
-
-		// Destroy the session completely
-		//session_destroy();
 		if ($this->debug) error_log('User session has been destroyed.');
+		
+		// Construct the remember me cookie name
+		$rememberMeCookieName = 'joomla_remember_me_' . UserHelper::getShortHashedUserAgent();
+
+		// Destroy the cookie by setting it with an expired time
+		$app->input->cookie->set($rememberMeCookieName, '', time() - 3600, '/');
+
+		if ($this->debug) {
+			error_log('Remember Me cookie destroyed on logout.');
+		}
 		
 		//Build logout URL for Microsoft
 		$logoutUrl = $this->logout_url;
@@ -825,21 +914,20 @@ class PlgSystemJbraSso extends CMSPlugin
 		$redirectUrl = $logoutUrl . '?post_logout_redirect_uri=' . urlencode($postLogoutRedirectUri);
 
 		// Redirect the user to logout
-		//$redirectUrl = Uri::root() . 'index.php?option=com_users&view=login';
-		Factory::getApplication()->redirect($redirectUrl);
+		$app->redirect($redirectUrl);
 	}
 	
 	protected function clearTokens()
 	{
 		if ($this->debug) error_log('Clearing tokens from storage.');
 
-		// Example: Delete tokens from the database (adjust table and column names as needed)
+		// Example: Delete tokens from the database
 		$user = Factory::getUser();
 
 		if ($user && !$user->guest) {
 			$db = Factory::getDbo();
 			$query = $db->getQuery(true)
-				->delete($db->quoteName('#__jbrasso_oauth_tokens')) // Replace with your token table name
+				->delete($db->quoteName('#__jbrasso_oauth_tokens'))
 				->where($db->quoteName('user_id') . ' = ' . (int)$user->id);
 			$db->setQuery($query);
 			$db->execute();

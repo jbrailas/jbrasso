@@ -1,8 +1,8 @@
-# Jbra oauth sso plugin for Joomla 5!
+# JbraSSO: oauth2 sso plugin for Joomla 5!
 
-**SSO oauth v2.0 plugin for Joomla! 5.x**
+**oauth v2.0 sso plugin for Joomla! 5.x**
 
-If you already know how to use jbrasso and you need it for a Joomla! project, than this is a library package to be used in Joomla! Easy to install and update.
+If you already know how to use JbraSSO and you need it for a Joomla! project, than this is a library package to be used in Joomla! Easy to install and update.
 
 Download
 --------
@@ -12,7 +12,7 @@ You can download the current version / older version of JbraSSO-Joomla-Library u
 Version
 -------
 
-* The current Joomla! Library is using jbrasso 1.0.
+* The current Joomla! Library is using JbraSSO 1.2.
 
 Usage
 -----
