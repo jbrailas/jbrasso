@@ -1,15 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<extension version="4.0" type="plugin" group="system" method="upgrade">
-	<name>SSO - JBRA_SSO v1.2</name>
+<extension version="5.0" type="plugin" group="system" method="upgrade">
+	<name>SSO - JBRA_SSO</name>
+	<description>oAuth2 SSO Plugin for Joomla 5 - JBRA_SSO</description>
 	<author>Giannis Brailas</author>
-	<creationDate>Feb 2025</creationDate>
+	<creationDate>Nov 2025</creationDate>
+	<version>1.6</version>
 	<copyright>Copyright (C) 2025 Giannis Brailas. All rights reserved.</copyright>
-	<license>GNU General Public License version 2 or later; see LICENSE.txt</license>
+	<license>GNU General Public License version 3 or later; see LICENSE.txt</license>
 	<authorEmail>jbrailas@rns-systems.eu</authorEmail>
 	<authorUrl>www.brailas.gr</authorUrl>
-	<version>1.2</version>
-	<buildDate>Fri Feb 14 11:22:10 2024</buildDate>
-	<description>RNS_SSO joomla plugin</description>
 	<files>
 		<filename plugin="jbrasso">jbrasso.php</filename>
 		<filename>index.html</filename>
@@ -25,9 +24,15 @@
                 <field name="client_id" type="text" label="Client ID" />
                 <field name="client_secret" type="password" label="Client Secret" />
 				<field name="logout_url" type="text" label="Logout URL" />
+				<field name="acceptable_domains" type="text" label="Acceptable Domains" />
+				<field name="frontend_sso" type="checkbox" label="Enable SSO on frontend" description="Click to enable sso on frontend. If it is not checked, use a button with link" />
 				<field name="admin_sso" type="checkbox" label="Enable SSO on admin" description="Click to enable sso on admin area" />
+				<field name="create_user" type="checkbox" label="Enable to auto-create users" description="Click to enable to auto-create users. Deny access if user not found." />
 				<field name="debug" type="checkbox" label="Enable Debug" description="Click to enable php errorlog debug" />
 		   </fieldset>
         </fields>
     </config>
+	<install>
+		<scriptfile>script.php</scriptfile>
+	</install>
 </extension>
